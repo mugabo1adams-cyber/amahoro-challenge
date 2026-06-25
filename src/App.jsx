@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { Analytics } from '@vercel/analytics/react';
 
 // ─── DATA ────────────────────────────────────────────────────
 const CHALLENGES = [
@@ -979,6 +980,7 @@ export default function App() {
       {screen === "onboard" && <OnboardingScreen onComplete={handleOnboardingComplete} />}
       {screen === "challenge" && <ChallengeScreen user={user || { name: "Friend", country: "Africa", trigger: "general stress", goal: "feel calmer" }} onCoach={() => setScreen("coach")} onHome={() => setScreen("landing")} />}
       {screen === "coach" && <CoachScreen user={user} onBack={() => setScreen(user ? "challenge" : "landing")} />}
+      <Analytics />
     </>
   );
 }
