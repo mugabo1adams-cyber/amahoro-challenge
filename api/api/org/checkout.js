@@ -1,72 +1,130 @@
-// lib/supabase.js
+// api/webhooks/paystack.js
 //
-// Zero-dependency Supabase REST client — talks directly to Supabase's
-// PostgREST API via fetch, same style as chat.js (no SDK import needed,
-// which matters because this runs on Vercel's Edge Runtime).
+// POST /api/webhooks/paystack
 //
-// Uses the service role key, which bypasses Row Level Security — same
-// trust level as an admin client. Only ever call this from /api routes.
+// Replaces the "we verify every payment manually within 24 hours" honor
+// system. Paystack calls this the moment a payment succeeds or a
+// subscription renews/fails. Set this exact URL in Paystack Dashboard
+// under Settings > API Keys & Webhooks:
 //
-// Env vars required:
-//   SUPABASE_URL
-//   SUPABASE_SERVICE_ROLE_KEY   (Supabase Dashboard > Settings > API — NOT the anon key)
+//   https://amahoro.app/api/webhooks/paystack
+//
+// Env vars required: PAYSTACK_SECRET_KEY
 
-const BASE = process.env.SUPABASE_URL + '/rest/v1';
-const KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+export const config = { runtime: 'edge' };
 
-function headers(extra = {}) {
-  return {
-    apikey: KEY,
-    Authorization: `Bearer ${KEY}`,
-    'Content-Type': 'application/json',
-    ...extra,
-  };
-}
+import { verifyHmac } from '../../lib/hmac.js';
+import { sbUpdate, sbSelect, sbInsert } from '../../lib/supabase.js';
+import { sendOrgOwnerWelcomeEmail } from '../../lib/resend.js';
 
-/**
- * SELECT rows. `query` is a raw PostgREST query string, e.g.
- * "organizations?owner_id=eq.abc&status=eq.active&select=*"
- */
-export async function sbSelect(query) {
-  const res = await fetch(`${BASE}/${query}`, { headers: headers() });
-  if (!res.ok) throw new Error(`Supabase select failed: ${res.status} ${await res.text()}`);
-  return res.json();
-}
-
-/** INSERT a row, returns the inserted row. */
-export async function sbInsert(table, row) {
-  const res = await fetch(`${BASE}/${table}`, {
-    method: 'POST',
-    headers: headers({ Prefer: 'return=representation' }),
-    body: JSON.stringify(row),
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
   });
-  const text = await res.text();
-  if (!res.ok) {
-    const err = new Error(`Supabase insert failed: ${res.status} ${text}`);
-    err.status = res.status;
-    err.body = text;
-    throw err;
+}
+
+export default async function handler(req) {
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+
+  const rawBody = await req.text();
+  const signature = req.headers.get('x-paystack-signature');
+
+  const valid = await verifyHmac(rawBody, process.env.PAYSTACK_SECRET_KEY, signature, 'SHA-512');
+  if (!valid) return json({ error: 'invalid signature' }, 401);
+
+  const event = JSON.parse(rawBody);
+
+  try {
+    switch (event.event) {
+      case 'charge.success':
+        await handleChargeSuccess(event.data);
+        break;
+      case 'subscription.disable':
+      case 'invoice.payment_failed':
+        await handleSubscriptionProblem(event.data);
+        break;
+      default:
+        break; // ignore other event types
+    }
+  } catch (err) {
+    console.error('[paystack webhook] handler error:', err);
+    // Still acknowledge receipt below so Paystack doesn't retry forever;
+    // this error is logged for manual follow-up.
   }
-  const rows = JSON.parse(text);
-  return rows[0];
+
+  return json({ received: true });
 }
 
-/** UPDATE rows matching a filter, e.g. sbUpdate('organizations', 'id=eq.abc', { status: 'active' }) */
-export async function sbUpdate(table, filter, patch) {
-  const res = await fetch(`${BASE}/${table}?${filter}`, {
-    method: 'PATCH',
-    headers: headers(),
-    body: JSON.stringify(patch),
+async function handleChargeSuccess(data) {
+  const { organization_id, user_id, org_name, billing_cycle } = data.metadata || {};
+  if (!organization_id) return; // not an org checkout — ignore (e.g. individual Pro, still honor-system for now)
+
+  const periodDays = billing_cycle === 'annual' ? 365 : 30;
+  const currentPeriodEnd = new Date(Date.now() + periodDays * 24 * 60 * 60 * 1000).toISOString();
+
+  await sbUpdate('organizations', `id=eq.${organization_id}`, {
+    status: 'active',
+    paystack_customer_code: data.customer?.customer_code,
+    current_period_end: currentPeriodEnd,
   });
-  if (!res.ok) throw new Error(`Supabase update failed: ${res.status} ${await res.text()}`);
+
+  await sbUpdate('users', `id=eq.${user_id}`, {
+    is_pro: true,
+    is_org: true,
+    org_name,
+    org_billing_cycle: billing_cycle,
+  });
+
+  const existing = await sbSelect(
+    `organization_members?organization_id=eq.${organization_id}&user_id=eq.${user_id}&select=id`
+  );
+  if (!existing.length) {
+    await sbInsert('organization_members', {
+      organization_id,
+      user_id,
+      email: data.customer?.email,
+      role: 'owner',
+      status: 'joined',
+      joined_at: new Date().toISOString(),
+    });
+  }
+
+  await sbInsert('payments', {
+    user_id,
+    organization_id,
+    plan: 'org',
+    amount: billing_cycle === 'annual' ? 290 : 29,
+    billing_cycle,
+    status: 'success',
+    paystack_reference: data.reference,
+  });
+
+  const users = await sbSelect(`users?id=eq.${user_id}&select=welcome_email_sent_at,name,email`);
+  const userRow = users[0];
+
+  if (userRow && !userRow.welcome_email_sent_at) {
+    try {
+      await sendOrgOwnerWelcomeEmail({
+        toEmail: userRow.email,
+        firstName: userRow.name,
+        orgName: org_name,
+        plan: billing_cycle === 'annual' ? 'Organizations — Annual' : 'Organizations — Monthly',
+        seatLimit: 30,
+      });
+      await sbUpdate('users', `id=eq.${user_id}`, { welcome_email_sent_at: new Date().toISOString() });
+    } catch (err) {
+      console.error('[paystack webhook] org owner welcome email failed:', err);
+    }
+  }
 }
 
-/** COUNT rows matching a filter, without downloading them. */
-export async function sbCount(table, filter) {
-  const res = await fetch(`${BASE}/${table}?${filter}&select=id`, {
-    headers: headers({ Prefer: 'count=exact', Range: '0-0' }),
+async function handleSubscriptionProblem(data) {
+  const subscriptionCode = data.subscription_code || data.subscription?.subscription_code;
+  if (!subscriptionCode) return;
+
+  await sbUpdate('organizations', `paystack_subscription_code=eq.${subscriptionCode}`, {
+    status: 'past_due',
   });
-  if (!res.ok) throw new Error(`Supabase count failed: ${res.status} ${await res.text()}`);
-  const range = res.headers.get('content-range'); // e.g. "0-0/12"
-  return range ? parseInt(range.split('/')[1], 10) : 0;
+}
 }
