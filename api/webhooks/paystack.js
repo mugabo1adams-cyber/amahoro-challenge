@@ -1,4 +1,4 @@
-// api/webhooks/paystack.js
+ // api/webhooks/paystack.js
 //
 // POST /api/webhooks/paystack
 //
@@ -15,7 +15,7 @@ export const config = { runtime: 'edge' };
 
 import { verifyHmac } from '../../lib/hmac.js';
 import { sbUpdate, sbSelect, sbInsert } from '../../lib/supabase.js';
-import { sendOrgOwnerWelcomeEmail } from '../../lib/resend.js';
+import { sendOrgOwnerWelcomeEmail, sendProActivatedEmail } from '../../lib/resend.js';
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -57,15 +57,34 @@ export default async function handler(req) {
 }
 
 async function handleChargeSuccess(data) {
-  const { organization_id, user_id, org_name, billing_cycle } = data.metadata || {};
-  if (!organization_id) return; // not an org checkout — ignore (e.g. individual Pro, still honor-system for now)
+  const { organization_id, user_id, org_name, billing_cycle, plan_type } = data.metadata || {};
 
+  if (organization_id) {
+    await handleOrgChargeSuccess(data, { organization_id, user_id, org_name, billing_cycle });
+    return;
+  }
+
+  if (plan_type === 'pro' && user_id) {
+    await handleProChargeSuccess(data, user_id);
+    return;
+  }
+
+  // Unrecognized charge (no matching metadata) — ignore rather than guess.
+  console.warn('[paystack webhook] charge.success with no matching metadata, ignored:', data.reference);
+}
+
+async function handleOrgChargeSuccess(data, { organization_id, user_id, org_name, billing_cycle }) {
   const periodDays = billing_cycle === 'annual' ? 365 : 30;
   const currentPeriodEnd = new Date(Date.now() + periodDays * 24 * 60 * 60 * 1000).toISOString();
+  // NOTE: verify the exact field name against a real Paystack webhook payload
+  // during test-mode testing — subscription_code may live at data.subscription_code
+  // or nested differently depending on the event/plan setup.
+  const subscriptionCode = data.subscription_code || data.plan_object?.subscription_code || null;
 
   await sbUpdate('organizations', `id=eq.${organization_id}`, {
     status: 'active',
     paystack_customer_code: data.customer?.customer_code,
+    paystack_subscription_code: subscriptionCode,
     current_period_end: currentPeriodEnd,
   });
 
@@ -119,11 +138,53 @@ async function handleChargeSuccess(data) {
   }
 }
 
+async function handleProChargeSuccess(data, user_id) {
+  // Same caveat as above — confirm this field name during test-mode testing.
+  const subscriptionCode = data.subscription_code || data.plan_object?.subscription_code || null;
+
+  await sbUpdate('users', `id=eq.${user_id}`, {
+    is_pro: true,
+    paystack_subscription_code: subscriptionCode,
+  });
+
+  await sbInsert('payments', {
+    user_id,
+    plan: 'pro',
+    amount: 4,
+    status: 'success',
+    paystack_reference: data.reference,
+  });
+
+  const users = await sbSelect(`users?id=eq.${user_id}&select=pro_activated_email_sent_at,name,email`);
+  const userRow = users[0];
+
+  if (userRow && !userRow.pro_activated_email_sent_at) {
+    try {
+      await sendProActivatedEmail({ toEmail: userRow.email, firstName: userRow.name });
+      await sbUpdate('users', `id=eq.${user_id}`, { pro_activated_email_sent_at: new Date().toISOString() });
+    } catch (err) {
+      console.error('[paystack webhook] pro activated email failed:', err);
+    }
+  }
+}
+
 async function handleSubscriptionProblem(data) {
   const subscriptionCode = data.subscription_code || data.subscription?.subscription_code;
   if (!subscriptionCode) return;
 
-  await sbUpdate('organizations', `paystack_subscription_code=eq.${subscriptionCode}`, {
-    status: 'past_due',
-  });
+  // Revoke access on failed/disabled payment — try an org subscription first.
+  const orgs = await sbSelect(
+    `organizations?paystack_subscription_code=eq.${subscriptionCode}&select=id,owner_id`
+  );
+  if (orgs.length) {
+    await sbUpdate('organizations', `id=eq.${orgs[0].id}`, { status: 'past_due' });
+    await sbUpdate('users', `id=eq.${orgs[0].owner_id}`, { is_org: false });
+    return;
+  }
+
+  // Otherwise, try matching an individual Pro subscription.
+  const users = await sbSelect(`users?paystack_subscription_code=eq.${subscriptionCode}&select=id`);
+  if (users.length) {
+    await sbUpdate('users', `id=eq.${users[0].id}`, { is_pro: false });
+  }
 }
