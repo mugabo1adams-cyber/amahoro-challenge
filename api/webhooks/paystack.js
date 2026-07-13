@@ -45,12 +45,10 @@ export default async function handler(req) {
         await handleSubscriptionProblem(event.data);
         break;
       default:
-        break; // ignore other event types
+        break;
     }
   } catch (err) {
     console.error('[paystack webhook] handler error:', err);
-    // Still acknowledge receipt below so Paystack doesn't retry forever;
-    // this error is logged for manual follow-up.
   }
 
   return json({ received: true });
@@ -69,16 +67,12 @@ async function handleChargeSuccess(data) {
     return;
   }
 
-  // Unrecognized charge (no matching metadata) — ignore rather than guess.
   console.warn('[paystack webhook] charge.success with no matching metadata, ignored:', data.reference);
 }
 
 async function handleOrgChargeSuccess(data, { organization_id, user_id, org_name, billing_cycle }) {
   const periodDays = billing_cycle === 'annual' ? 365 : 30;
   const currentPeriodEnd = new Date(Date.now() + periodDays * 24 * 60 * 60 * 1000).toISOString();
-  // NOTE: verify the exact field name against a real Paystack webhook payload
-  // during test-mode testing — subscription_code may live at data.subscription_code
-  // or nested differently depending on the event/plan setup.
   const subscriptionCode = data.subscription_code || data.plan_object?.subscription_code || null;
 
   await sbUpdate('organizations', `id=eq.${organization_id}`, {
@@ -113,7 +107,7 @@ async function handleOrgChargeSuccess(data, { organization_id, user_id, org_name
     user_id,
     organization_id,
     plan: 'org',
-    amount: billing_cycle === 'annual' ? 290 : 29,
+    amount: billing_cycle === 'annual' ? 1500 : 150,
     billing_cycle,
     status: 'success',
     paystack_reference: data.reference,
@@ -139,7 +133,6 @@ async function handleOrgChargeSuccess(data, { organization_id, user_id, org_name
 }
 
 async function handleProChargeSuccess(data, user_id) {
-  // Same caveat as above — confirm this field name during test-mode testing.
   const subscriptionCode = data.subscription_code || data.plan_object?.subscription_code || null;
 
   await sbUpdate('users', `id=eq.${user_id}`, {
@@ -172,7 +165,6 @@ async function handleSubscriptionProblem(data) {
   const subscriptionCode = data.subscription_code || data.subscription?.subscription_code;
   if (!subscriptionCode) return;
 
-  // Revoke access on failed/disabled payment — try an org subscription first.
   const orgs = await sbSelect(
     `organizations?paystack_subscription_code=eq.${subscriptionCode}&select=id,owner_id`
   );
@@ -182,7 +174,6 @@ async function handleSubscriptionProblem(data) {
     return;
   }
 
-  // Otherwise, try matching an individual Pro subscription.
   const users = await sbSelect(`users?paystack_subscription_code=eq.${subscriptionCode}&select=id`);
   if (users.length) {
     await sbUpdate('users', `id=eq.${users[0].id}`, { is_pro: false });
