@@ -51,6 +51,8 @@ export default async function handler(req) {
     return json({ error: 'billing not configured yet' }, 500);
   }
 
+  // Create the organization row up front as "pending" — the webhook flips
+  // it to "active" once Paystack confirms the payment.
   let org;
   try {
     org = await sbInsert('organizations', {
@@ -75,7 +77,6 @@ export default async function handler(req) {
       body: JSON.stringify({
         email,
         plan: planCode,
-        currency: 'KES',
         callback_url: process.env.APP_URL,
         metadata: {
           organization_id: org.id,
