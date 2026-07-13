@@ -1,4 +1,4 @@
-// api/org/checkout.js
+ // api/org/checkout.js
 //
 // POST /api/org/checkout
 // Body: { userId, email, orgName, billingCycle: "monthly" | "annual" }
@@ -7,8 +7,8 @@
 // Paystack subscription and returns the checkout URL to redirect to.
 //
 // Setup required in Paystack Dashboard (Products > Plans) BEFORE this works:
-//   1. Create plan "Amahoro Organizations — Monthly": $29, interval = monthly
-//   2. Create plan "Amahoro Organizations — Annual": $290, interval = annually
+//   1. Create plan "Amahoro Organizations — Monthly": $150, interval = monthly
+//   2. Create plan "Amahoro Organizations — Annual": $1500, interval = annually
 //   Copy each plan's code into the env vars below.
 //
 // Env vars required (Vercel Project Settings > Environment Variables):
@@ -51,8 +51,6 @@ export default async function handler(req) {
     return json({ error: 'billing not configured yet' }, 500);
   }
 
-  // Create the organization row up front as "pending" — the webhook flips
-  // it to "active" once Paystack confirms the payment.
   let org;
   try {
     org = await sbInsert('organizations', {
@@ -77,6 +75,7 @@ export default async function handler(req) {
       body: JSON.stringify({
         email,
         plan: planCode,
+        currency: 'KES',
         callback_url: process.env.APP_URL,
         metadata: {
           organization_id: org.id,
