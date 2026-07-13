@@ -1,10 +1,12 @@
-// api/pro/checkout.js
+ // api/pro/checkout.js
 //
 // POST /api/pro/checkout
 // Body: { userId, email }
 //
 // Called by the "Subscribe" button on the individual Pro card in ProScreen
 // (App.jsx). Starts a real Paystack subscription for the $4/month plan.
+// Brings individual Pro onto the same real-verification system as
+// Organizations — no more honor-system checkbox.
 //
 // Setup required in Paystack Dashboard (Products > Plans) BEFORE this works:
 //   Create plan "Amahoro Pro — Monthly": $4, interval = monthly
@@ -50,6 +52,7 @@ export default async function handler(req) {
       body: JSON.stringify({
         email,
         plan: planCode,
+        currency: 'KES',
         callback_url: process.env.APP_URL,
         metadata: {
           user_id: userId,
