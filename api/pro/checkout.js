@@ -52,6 +52,7 @@ export default async function handler(req) {
       body: JSON.stringify({
         email,
         plan: planCode,
+        amount: 1, // required by Paystack even when using a plan — the plan's real amount overrides this value
         callback_url: process.env.APP_URL,
         metadata: {
           user_id: userId,
