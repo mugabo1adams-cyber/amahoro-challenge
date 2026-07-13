@@ -52,7 +52,6 @@ export default async function handler(req) {
       body: JSON.stringify({
         email,
         plan: planCode,
-        currency: 'KES',
         callback_url: process.env.APP_URL,
         metadata: {
           user_id: userId,
