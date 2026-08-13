@@ -1791,6 +1791,150 @@ class ErrorBoundary extends React.Component {
 
 
 // ─── PROFILE COMPLETION PROMPT ────────────────────────────────
+// ─── IMPACT BASELINE CHECK-IN ─────────────────────────────────
+const EMPLOYMENT_OPTIONS = [
+  { value: "employed_full_time", label: "Employed full-time" },
+  { value: "employed_part_time", label: "Employed part-time" },
+  { value: "self_employed", label: "Self-employed" },
+  { value: "unemployed_seeking", label: "Unemployed, looking for work" },
+  { value: "unemployed_not_seeking", label: "Unemployed, not currently looking" },
+  { value: "student", label: "Student" },
+  { value: "other", label: "Other" },
+];
+
+const EDUCATION_OPTIONS = [
+  { value: "in_secondary_school", label: "In secondary school" },
+  { value: "in_tertiary_education", label: "In tertiary education" },
+  { value: "completed_secondary", label: "Completed secondary school" },
+  { value: "completed_tertiary", label: "Completed tertiary education" },
+  { value: "not_in_school", label: "Not currently in school" },
+  { value: "other", label: "Other" },
+];
+
+function ScaleButtons({ value, onChange }) {
+  return (
+    <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+      {Array.from({ length:10 }, (_, i) => i + 1).map(n => (
+        <button key={n} type="button" onClick={() => onChange(n)}
+          style={{ width:34, height:34, borderRadius:8, border:`1px solid ${value===n?C.sky:C.border}`, background:value===n?C.sky:C.deep, color:value===n?"#000":C.muted, fontFamily:"Sora,sans-serif", fontWeight:700, fontSize:"0.85rem", cursor:"pointer" }}>
+          {n}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ImpactBaselinePrompt({ onStart, onDismiss }) {
+  return (
+    <div style={{ position:"fixed", bottom:90, left:"50%", transform:"translateX(-50%)", zIndex:200, width:"calc(100% - 32px)", maxWidth:480 }}>
+      <div style={{ background:C.card, border:`1px solid ${C.sky}`, borderRadius:14, padding:"16px 18px", boxShadow:"0 8px 32px rgba(0,0,0,0.4)", display:"flex", alignItems:"flex-start", gap:12 }}>
+        <div style={{ fontSize:"1.6rem" }}>📋</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontFamily:"Sora,sans-serif", fontWeight:700, fontSize:"0.88rem", color:C.sky, marginBottom:4 }}>Your organization has a quick check-in for you</div>
+          <div style={{ fontSize:"0.82rem", color:C.muted, lineHeight:1.6, marginBottom:12 }}>Takes about a minute. It helps track how the program is going — for you and for your group.</div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={onStart} style={{ background:C.sky, border:"none", color:"#000", fontFamily:"Sora,sans-serif", fontWeight:700, fontSize:"0.82rem", padding:"7px 16px", borderRadius:7, cursor:"pointer" }}>Start check-in →</button>
+            <button onClick={onDismiss} style={{ background:"transparent", border:`1px solid ${C.border}`, color:C.muted, fontFamily:"Sora,sans-serif", fontSize:"0.8rem", padding:"7px 14px", borderRadius:7, cursor:"pointer" }}>Maybe later</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImpactBaselineScreen({ user, organizationId, onDone, onBack }) {
+  const [employmentStatus, setEmploymentStatus] = useState("");
+  const [educationStatus, setEducationStatus] = useState("");
+  const [wellbeing, setWellbeing] = useState(null);
+  const [confidence, setConfidence] = useState(null);
+  const [notes, setNotes] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const canSubmit = employmentStatus && educationStatus && wellbeing && confidence && !submitting;
+
+  const submit = async () => {
+    if (!canSubmit) return;
+    setSubmitting(true); setError("");
+    try {
+      const { error: insertError } = await supabase.from("impact_baselines").insert({
+        organization_id: organizationId,
+        user_id: user.id,
+        employment_status: employmentStatus,
+        education_status: educationStatus,
+        self_rated_wellbeing: wellbeing,
+        self_rated_confidence: confidence,
+        responses: notes.trim() ? { notes: notes.trim() } : {},
+      });
+      if (insertError) throw insertError;
+      onDone();
+    } catch (err) {
+      console.error("Baseline submit error:", err);
+      setError("Something went wrong saving your check-in. Please try again.");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:C.night, color:C.text, fontFamily:"DM Sans,sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap'); *{box-sizing:border-box} @keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}} .fade-in{animation:fadeIn 0.4s ease} select:focus,textarea:focus{border-color:#4FC3F7!important;outline:none}`}</style>
+
+      <div style={{ background:C.deep, borderBottom:`1px solid ${C.border}`, padding:"0 4%", height:62, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+        <button onClick={onBack} style={{ background:"transparent", border:"none", color:C.muted, cursor:"pointer", fontFamily:"Sora,sans-serif", fontSize:"0.9rem" }}>← Back</button>
+        <div style={{ fontFamily:"Sora,sans-serif", fontWeight:800, fontSize:"1rem", color:C.sky }}>📋 Check-in</div>
+        <div style={{ width:60 }} />
+      </div>
+
+      <div className="fade-in" style={{ maxWidth:560, margin:"0 auto", padding:"2rem 4% 5rem" }}>
+        <h2 style={{ fontFamily:"Sora,sans-serif", fontWeight:800, fontSize:"1.5rem", marginBottom:8 }}>A quick check-in</h2>
+        <p style={{ color:C.muted, marginBottom:28, lineHeight:1.7 }}>This helps your organization understand how the group is doing. It takes about a minute, and there are no wrong answers.</p>
+
+        <div style={{ marginBottom:22 }}>
+          <label style={{ fontSize:"0.8rem", fontFamily:"Sora,sans-serif", fontWeight:700, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", display:"block", marginBottom:8 }}>Right now, are you...</label>
+          <select value={employmentStatus} onChange={e => setEmploymentStatus(e.target.value)}
+            style={{ width:"100%", background:C.deep, border:`1px solid ${C.border}`, borderRadius:8, padding:"11px 14px", color:C.text, fontFamily:"DM Sans,sans-serif", fontSize:"0.95rem" }}>
+            <option value="">Select one...</option>
+            {EMPLOYMENT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+
+        <div style={{ marginBottom:22 }}>
+          <label style={{ fontSize:"0.8rem", fontFamily:"Sora,sans-serif", fontWeight:700, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", display:"block", marginBottom:8 }}>And in terms of school...</label>
+          <select value={educationStatus} onChange={e => setEducationStatus(e.target.value)}
+            style={{ width:"100%", background:C.deep, border:`1px solid ${C.border}`, borderRadius:8, padding:"11px 14px", color:C.text, fontFamily:"DM Sans,sans-serif", fontSize:"0.95rem" }}>
+            <option value="">Select one...</option>
+            {EDUCATION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+
+        <div style={{ marginBottom:22 }}>
+          <label style={{ fontSize:"0.8rem", fontFamily:"Sora,sans-serif", fontWeight:700, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", display:"block", marginBottom:8 }}>How is your overall wellbeing lately? (1 = struggling, 10 = thriving)</label>
+          <ScaleButtons value={wellbeing} onChange={setWellbeing} />
+        </div>
+
+        <div style={{ marginBottom:26 }}>
+          <label style={{ fontSize:"0.8rem", fontFamily:"Sora,sans-serif", fontWeight:700, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", display:"block", marginBottom:8 }}>How confident do you feel about your next steps? (1 = not at all, 10 = very)</label>
+          <ScaleButtons value={confidence} onChange={setConfidence} />
+        </div>
+
+        <div style={{ marginBottom:26 }}>
+          <label style={{ fontSize:"0.8rem", fontFamily:"Sora,sans-serif", fontWeight:700, color:C.muted, letterSpacing:"0.04em", textTransform:"uppercase", display:"block", marginBottom:8 }}>Anything else you'd like to share? (optional)</label>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
+            placeholder="Optional — anything on your mind about where you're at right now."
+            style={{ width:"100%", background:C.deep, border:`1px solid ${C.border}`, borderRadius:8, padding:"11px 14px", color:C.text, fontFamily:"DM Sans,sans-serif", fontSize:"0.92rem", resize:"vertical" }} />
+        </div>
+
+        {error && <div style={{ background:"rgba(232,84,74,0.1)", border:"1px solid rgba(232,84,74,0.3)", borderRadius:8, padding:"10px 14px", color:C.red, fontSize:"0.88rem", marginBottom:16 }}>{error}</div>}
+
+        <button onClick={submit} disabled={!canSubmit}
+          style={{ width:"100%", padding:"13px", borderRadius:8, border:"none", background:canSubmit?C.sky:C.faint, color:canSubmit?"#000":C.muted, fontFamily:"Sora,sans-serif", fontWeight:700, fontSize:"0.95rem", cursor:canSubmit?"pointer":"not-allowed" }}>
+          {submitting ? "Saving..." : "Submit check-in →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ProfilePrompt({ onComplete, onDismiss }) {
   return (
     <div style={{ position:"fixed", bottom:90, left:"50%", transform:"translateX(-50%)", zIndex:200, width:"calc(100% - 32px)", maxWidth:480 }}>
@@ -1839,6 +1983,9 @@ function AppInner() {
   const [isPro, setIsPro] = useState(false);
   const [isOrg, setIsOrg] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [impactOrgId, setImpactOrgId] = useState(null);
+  const [showImpactPrompt, setShowImpactPrompt] = useState(false);
+  const [impactPromptDismissed, setImpactPromptDismissed] = useState(false);
 
   useEffect(() => {
     // Check existing session
@@ -1858,12 +2005,38 @@ function AppInner() {
         loadProfile(session.user);
       } else {
         setUser(null); setProfile(null); setIsPro(false); setIsOrg(false);
+        setImpactOrgId(null); setShowImpactPrompt(false); setImpactPromptDismissed(false);
         setScreen("landing"); setLoading(false);
       }
     });
 
     return () => subscription.unsubscribe();
   }, []);
+
+  // If this person is a joined member of an org (not the owner) and hasn't
+  // done their intake check-in for that org yet, queue up the prompt. Owners
+  // are staff running the program, not participants, so they're excluded.
+  const checkImpactBaselineNeeded = async (userId) => {
+    const { data: membership } = await supabase
+      .from("organization_members")
+      .select("organization_id")
+      .eq("user_id", userId)
+      .eq("status", "joined")
+      .eq("role", "member")
+      .maybeSingle();
+    if (!membership) return;
+
+    const { data: baseline } = await supabase
+      .from("impact_baselines")
+      .select("id")
+      .eq("organization_id", membership.organization_id)
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!baseline) {
+      setImpactOrgId(membership.organization_id);
+      setTimeout(() => setShowImpactPrompt(true), 1200);
+    }
+  };
 
   const loadProfile = async (u) => {
     setLoading(true);
@@ -1873,6 +2046,7 @@ function AppInner() {
       setIsPro(data.is_pro || false);
       setIsOrg(data.is_org || false);
       setScreen(u.email === ADMIN_EMAIL ? "admin" : "challenge");
+      if (data.is_org) checkImpactBaselineNeeded(u.id);
     } else {
       setScreen("onboard");
     }
@@ -1907,6 +2081,16 @@ function AppInner() {
       {showProfilePrompt && !profile && <ProfilePrompt
         onComplete={() => { setShowProfilePrompt(false); setScreen("onboard"); }}
         onDismiss={() => { setShowProfilePrompt(false); setPromptDismissed(true); }}
+      />}
+      {screen==="challenge" && showImpactPrompt && impactOrgId && !impactPromptDismissed && <ImpactBaselinePrompt
+        onStart={() => { setShowImpactPrompt(false); setScreen("impactBaseline"); }}
+        onDismiss={() => { setShowImpactPrompt(false); setImpactPromptDismissed(true); }}
+      />}
+      {screen==="impactBaseline" && <ImpactBaselineScreen
+        user={user}
+        organizationId={impactOrgId}
+        onDone={() => setScreen("challenge")}
+        onBack={() => setScreen("challenge")}
       />}
       {screen==="pro" && <ProScreen user={user} profile={profile} isPro={isPro} isOrg={isOrg} onActivatePro={() => { setIsPro(true); setScreen("challenge"); }} onActivateOrg={() => { setIsPro(true); setIsOrg(true); setScreen("challenge"); }} onBack={() => setScreen(profile?"challenge":"landing")} onLegal={(tab) => { setLegalTab(tab); setScreen("legal"); }} />}
       {screen==="admin" && <AdminDashboard onBack={() => setScreen("challenge")} />}
